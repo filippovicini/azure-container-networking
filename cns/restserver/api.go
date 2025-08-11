@@ -987,8 +987,6 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		return
 	}
 
-	ctx := r.Context()
-
 	joinResp, err := service.wsproxy.JoinNetwork(ctx, req.NetworkID) //nolint:govet // ok to shadow
 	if err != nil {
 		resp := cns.PublishNetworkContainerResponse{
