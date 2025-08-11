@@ -23,6 +23,7 @@ import (
 	"github.com/Azure/azure-container-networking/common"
 	"github.com/Azure/azure-container-networking/nmagent"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -502,6 +503,15 @@ func (service *HTTPRestService) getHomeAz(w http.ResponseWriter, r *http.Request
 }
 
 func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWriter, r *http.Request) {
+
+	// Log all headers
+	logger.Printf("[Azure CNS] All Headers:")
+	for name, values := range r.Header {
+		for _, value := range values {
+			logger.Printf("[Azure CNS]   %s: %s", name, value)
+		}
+	}
+
 	var req cns.CreateNetworkContainerRequest
 	if err := common.Decode(w, r, &req); err != nil {
 		logger.Errorf("[Azure CNS] could not decode request: %v", err)
@@ -512,6 +522,43 @@ func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWr
 		logger.Errorf("[Azure CNS] invalid request %+v: %s", req, err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+
+	// Extract specific headers of interest
+	traceID := r.Header.Get("X-Trace-Id")
+	traceparent := r.Header.Get("Traceparent")
+	contentType := r.Header.Get("Content-Type")
+	userAgent := r.Header.Get("User-Agent")
+	authorization := r.Header.Get("Authorization")
+
+	// Log specific headers
+	logger.Printf("[Azure CNS] Key Headers:")
+	logger.Printf("[Azure CNS]   Content-Type: %s", contentType)
+	logger.Printf("[Azure CNS]   User-Agent: %s", userAgent)
+	if authorization != "" {
+		logger.Printf("[Azure CNS]   Authorization: [REDACTED]") // Don't log sensitive data
+	}
+	if traceID != "" {
+		logger.Printf("[Azure CNS]   X-Trace-Id: %s", traceID)
+	}
+	if traceparent != "" {
+		logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
+	}
+
+	// Extract trace information from OpenTelemetry context
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	sc := span.SpanContext()
+	if sc.IsValid() {
+		logger.Printf("[Azure CNS] OpenTelemetry TraceID: %s, SpanID: %s, TraceFlags: %s",
+			sc.TraceID().String(), sc.SpanID().String(), sc.TraceFlags().String())
+	} else {
+		logger.Printf("[Azure CNS] No valid OpenTelemetry trace context found")
+	}
+
+	// Log the W3C Traceparent header again for reference
+	if traceparent != "" {
+		logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
 	}
 
 	logger.Request(service.Name, req.String(), nil)
