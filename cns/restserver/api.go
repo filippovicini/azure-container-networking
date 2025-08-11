@@ -23,6 +23,7 @@ import (
 	"github.com/Azure/azure-container-networking/common"
 	"github.com/Azure/azure-container-networking/nmagent"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -525,37 +526,6 @@ func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWr
 		return
 	}
 
-	traceID := r.Header.Get("X-Trace-Id")
-	traceparent := r.Header.Get("Traceparent")
-	contentType := r.Header.Get("Content-Type")
-	userAgent := r.Header.Get("User-Agent")
-	authorization := r.Header.Get("Authorization")
-
-	// Log specific headers for testing
-	// TODO: remove this
-	logger.Printf("[Azure CNS] Key Headers:")
-	logger.Printf("[Azure CNS]   Content-Type: %s", contentType)
-	logger.Printf("[Azure CNS]   User-Agent: %s", userAgent)
-	if authorization != "" {
-		logger.Printf("[Azure CNS]   Authorization: Alert some authorization header is present, but not logging it for security reasons")
-	}
-	logger.Printf("[Azure CNS]   X-Trace-Id: %s", traceID)
-	logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
-
-	ctx := r.Context()
-	span := trace.SpanFromContext(ctx)
-	sc := span.SpanContext()
-	if sc.IsValid() {
-		logger.Printf("[Azure CNS] OpenTelemetry TraceID: %s, SpanID: %s, TraceFlags: %s",
-			sc.TraceID().String(), sc.SpanID().String(), sc.TraceFlags().String())
-	} else {
-		logger.Printf("[Azure CNS] No valid OpenTelemetry trace context found")
-	}
-
-	// Log the W3C Traceparent header again for reference
-	// TODO: remove this
-	logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
-
 	logger.Request(service.Name, req.String(), nil)
 	var returnCode types.ResponseCode
 	var returnMessage string
@@ -947,6 +917,7 @@ func respondJSON(w http.ResponseWriter, statusCode int, body any) {
 	}
 }
 
+// PUBLISH NETWORK CONTAINER
 // Publish Network Container by calling nmagent
 func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -960,6 +931,47 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		return
 	}
 
+	traceID := r.Header.Get("Trace-Id")
+	traceparent := r.Header.Get("Traceparent")
+	contentType := r.Header.Get("Content-Type")
+	userAgent := r.Header.Get("User-Agent")
+	authorization := r.Header.Get("Authorization")
+
+	// Log specific headers for testing
+	// TODO: remove this
+	logger.Printf("[Azure CNS] Key Headers:")
+	logger.Printf("[Azure CNS]   Content-Type: %s", contentType)
+	logger.Printf("[Azure CNS]   User-Agent: %s", userAgent)
+	if authorization != "" {
+		logger.Printf("[Azure CNS]   Authorization: Alert some authorization header is present, but not logging it for security reasons")
+	}
+	logger.Printf("[Azure CNS]   Trace-Id: %s", traceID)
+	logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
+
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	sc := span.SpanContext()
+	if sc.IsValid() {
+		logger.Printf("[Azure CNS] OpenTelemetry TraceID: %s, SpanID: %s, TraceFlags: %s",
+			sc.TraceID().String(), sc.SpanID().String(), sc.TraceFlags().String())
+	} else {
+		logger.Printf("[Azure CNS] No valid OpenTelemetry trace context found")
+	}
+
+	// Log the W3C Traceparent header again for reference
+	// TODO: remove this
+	logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
+
+	span.AddEvent("PublishNetworkContainer", trace.WithAttributes(
+		attribute.String("networkContainerID", req.NetworkContainerID),
+		attribute.String("networkID", req.NetworkID),
+		attribute.String("createNetworkContainerURL", req.CreateNetworkContainerURL),
+		attribute.String("traceID", traceID),
+		attribute.String("traceparent", traceparent),
+		attribute.String("contentType", contentType),
+		attribute.String("userAgent", userAgent),
+		attribute.String("authorization", authorization),
+	))
 	logger.Request(service.Name, req, nil)
 
 	ncParams, err := extractNCParamsFromURL(req.CreateNetworkContainerURL)
