@@ -504,7 +504,8 @@ func (service *HTTPRestService) getHomeAz(w http.ResponseWriter, r *http.Request
 
 func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWriter, r *http.Request) {
 
-	// Log all headers
+	// Log all headers for testing
+	// TODO: remove this
 	logger.Printf("[Azure CNS] All Headers:")
 	for name, values := range r.Header {
 		for _, value := range values {
@@ -524,28 +525,23 @@ func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWr
 		return
 	}
 
-	// Extract specific headers of interest
 	traceID := r.Header.Get("X-Trace-Id")
 	traceparent := r.Header.Get("Traceparent")
 	contentType := r.Header.Get("Content-Type")
 	userAgent := r.Header.Get("User-Agent")
 	authorization := r.Header.Get("Authorization")
 
-	// Log specific headers
+	// Log specific headers for testing
+	// TODO: remove this
 	logger.Printf("[Azure CNS] Key Headers:")
 	logger.Printf("[Azure CNS]   Content-Type: %s", contentType)
 	logger.Printf("[Azure CNS]   User-Agent: %s", userAgent)
 	if authorization != "" {
-		logger.Printf("[Azure CNS]   Authorization: [REDACTED]") // Don't log sensitive data
+		logger.Printf("[Azure CNS]   Authorization: Alert some authorization header is present, but not logging it for security reasons")
 	}
-	if traceID != "" {
-		logger.Printf("[Azure CNS]   X-Trace-Id: %s", traceID)
-	}
-	if traceparent != "" {
-		logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
-	}
+	logger.Printf("[Azure CNS]   X-Trace-Id: %s", traceID)
+	logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
 
-	// Extract trace information from OpenTelemetry context
 	ctx := r.Context()
 	span := trace.SpanFromContext(ctx)
 	sc := span.SpanContext()
@@ -557,9 +553,8 @@ func (service *HTTPRestService) createOrUpdateNetworkContainer(w http.ResponseWr
 	}
 
 	// Log the W3C Traceparent header again for reference
-	if traceparent != "" {
-		logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
-	}
+	// TODO: remove this
+	logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
 
 	logger.Request(service.Name, req.String(), nil)
 	var returnCode types.ResponseCode
