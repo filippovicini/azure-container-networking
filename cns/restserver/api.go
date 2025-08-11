@@ -23,7 +23,9 @@ import (
 	"github.com/Azure/azure-container-networking/common"
 	"github.com/Azure/azure-container-networking/nmagent"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -931,7 +933,7 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		return
 	}
 
-	traceID := r.Header.Get("Trace-Id")
+	traceID := r.Header.Get("TraceId")
 	traceparent := r.Header.Get("Traceparent")
 	contentType := r.Header.Get("Content-Type")
 	userAgent := r.Header.Get("User-Agent")
@@ -945,11 +947,20 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 	if authorization != "" {
 		logger.Printf("[Azure CNS]   Authorization: Alert some authorization header is present, but not logging it for security reasons")
 	}
-	logger.Printf("[Azure CNS]   Trace-Id: %s", traceID)
+	logger.Printf("[Azure CNS]   TraceId: %s", traceID)
 	logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
 
 	ctx := r.Context()
-	span := trace.SpanFromContext(ctx)
+
+	if traceparent != "" {
+		propagator := propagation.TraceContext{}
+		ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+		logger.Printf("[Azure CNS] Extracted trace context from Traceparent header: %s", traceparent)
+	}
+
+	ctx, span := otel.Tracer("azure-cns").Start(ctx, "processNetworkContainerPublish")
+	defer span.End()
+
 	sc := span.SpanContext()
 	if sc.IsValid() {
 		logger.Printf("[Azure CNS] OpenTelemetry TraceID: %s, SpanID: %s, TraceFlags: %s",
@@ -962,7 +973,7 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 	// TODO: remove this
 	logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
 
-	span.AddEvent("PublishNetworkContainer", trace.WithAttributes(
+	span.AddEvent("CNS", trace.WithAttributes(
 		attribute.String("networkContainerID", req.NetworkContainerID),
 		attribute.String("networkID", req.NetworkID),
 		attribute.String("createNetworkContainerURL", req.CreateNetworkContainerURL),

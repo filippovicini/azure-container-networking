@@ -71,6 +71,12 @@ import (
 	"github.com/go-logr/zapr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
@@ -493,6 +499,48 @@ func startTelemetryService(ctx context.Context) {
 	tb.PushData(ctx)
 }
 
+func initOpenTelemetry(ctx context.Context, serviceName string) (*trace.TracerProvider, error) {
+	// Get Jaeger endpoint from environment variable, default to your Jaeger VM
+	jaegerEndpoint := os.Getenv("JAEGER_ENDPOINT")
+	if jaegerEndpoint == "" {
+		jaegerEndpoint = "http://10.0.0.4:14268/api/traces"
+	}
+
+	logger.Printf("[Azure CNS] Initializing OpenTelemetry with Jaeger endpoint: %s", jaegerEndpoint)
+
+	// Create Jaeger exporter
+	exporter, err := jaeger.New(jaeger.WithCollectorEndpoint(
+		jaeger.WithEndpoint(jaegerEndpoint),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Jaeger exporter: %w", err)
+	}
+
+	// Create resource
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String(serviceName),
+			semconv.ServiceVersionKey.String(version),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	tp := trace.NewTracerProvider(
+		trace.WithBatcher(exporter),
+		trace.WithResource(res),
+		trace.WithSampler(trace.AlwaysSample()),
+	)
+
+	otel.SetTracerProvider(tp)
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	logger.Printf("[Azure CNS] OpenTelemetry initialized with endpoint: %s", jaegerEndpoint)
+	return tp, nil
+}
+
 // Main is the entry point for CNS.
 func main() {
 	// Initialize and parse command line arguments.
@@ -541,6 +589,21 @@ func main() {
 
 	// Create logging provider.
 	logger.InitLogger(name, logLevel, logTarget, logDirectory)
+
+	// Initialize OpenTelemetry tracing
+	tp, err := initOpenTelemetry(rootCtx, name)
+	if err != nil {
+		logger.Errorf("[Azure CNS] Failed to initialize OpenTelemetry: %v", err)
+		// Continue without tracing rather than failing completely
+	} else {
+		// Ensure tracer provider is properly shutdown on exit
+		defer func() {
+			if shutdownErr := tp.Shutdown(context.Background()); shutdownErr != nil {
+				logger.Errorf("[Azure CNS] Error shutting down tracer provider: %v", shutdownErr)
+			}
+		}()
+		logger.Printf("[Azure CNS] OpenTelemetry tracing initialized successfully")
+	}
 
 	if clientDebugCmd != "" {
 		err := cnscli.HandleCNSClientCommands(rootCtx, clientDebugCmd, clientDebugArg)

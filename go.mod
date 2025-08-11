@@ -127,7 +127,10 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v5 v5.2.0
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources v1.2.0
 	github.com/cilium/cilium v1.15.16
+	github.com/cilium/ebpf v0.16.0
 	github.com/jsternberg/zap-logfmt v1.3.0
+	go.opentelemetry.io/otel v1.36.0
+	go.opentelemetry.io/otel/trace v1.36.0
 	golang.org/x/sync v0.16.0
 	gotest.tools/v3 v3.5.2
 	k8s.io/kubectl v0.28.5
@@ -145,7 +148,6 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/checkpoint-restore/go-criu/v6 v6.3.0 // indirect
-	github.com/cilium/ebpf v0.16.0 // indirect
 	github.com/cilium/proxy v0.0.0-20231202123106-38b645b854f3 // indirect
 	github.com/container-storage-interface/spec v1.8.0 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
@@ -214,12 +216,11 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/github.com/emicklei/go-restful/otelrestful v0.42.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.54.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.54.0 // indirect
-	go.opentelemetry.io/otel v1.36.0 // indirect
+	go.opentelemetry.io/otel/exporters/jaeger v1.17.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.19.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.19.0 // indirect
 	go.opentelemetry.io/otel/metric v1.36.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.36.0 // indirect
-	go.opentelemetry.io/otel/trace v1.36.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
 	go.uber.org/dig v1.17.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
