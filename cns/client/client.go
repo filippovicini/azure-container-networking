@@ -432,6 +432,7 @@ func (c *Client) RequestIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) 
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to decode IPConfigsResponse")
 	}
+	//GET THE TRACE DOWN HERE
 
 	if response.Response.ReturnCode != 0 {
 		return nil, errors.New(response.Response.Message)

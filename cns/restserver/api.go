@@ -933,7 +933,15 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		return
 	}
 
+	// Store traceID by NetworkContainerID for propagation
 	traceID := r.Header.Get("TraceId")
+	if traceID != "" && req.NetworkContainerID != "" {
+		if service.traceIDByInfraContainerID == nil {
+			service.traceIDByInfraContainerID = make(map[string]string)
+		}
+		service.traceIDByInfraContainerID[req.NetworkContainerID] = traceID
+	}
+	logger.Printf("[Azure CNS] PublishNetworkContainer request: %+v", req.NetworkContainerID)
 	traceparent := r.Header.Get("Traceparent")
 	contentType := r.Header.Get("Content-Type")
 	userAgent := r.Header.Get("User-Agent")
@@ -1058,6 +1066,13 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		resp.Response = cns.Response{
 			ReturnCode: types.NetworkContainerPublishFailed,
 			Message:    fmt.Sprintf("failed to publish nc %s. did not get 200 from wireserver", req.NetworkContainerID),
+		}
+	} else {
+		// Write traceparent to file for successful publish operations
+		if traceparent != "" && req.NetworkContainerID != "" {
+			if err := service.writeTraceIDToFile(req.NetworkContainerID, traceparent); err != nil {
+				logger.Errorf("[Azure CNS] Failed to write traceparent to file for NC %s: %v", req.NetworkContainerID, err)
+			}
 		}
 	}
 

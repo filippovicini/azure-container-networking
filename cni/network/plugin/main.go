@@ -76,6 +76,7 @@ func rootExecute() error {
 		return errors.Wrap(err, "Create plugin error")
 	}
 
+	// Starting point
 	// Check CNI_COMMAND value
 	cniCmd := os.Getenv(cni.Cmd)
 
