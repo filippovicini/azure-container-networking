@@ -501,6 +501,7 @@ type GetNetworkContainerResponse struct {
 }
 
 type PodIpInfo struct {
+	NetworkContainerID              string
 	PodIPConfig                     IPSubnet
 	NetworkContainerPrimaryIPConfig IPConfiguration
 	HostPrimaryIPInfo               HostIPInfo

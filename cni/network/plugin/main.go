@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -17,6 +18,12 @@ import (
 	"github.com/Azure/azure-container-networking/platform"
 	"github.com/Azure/azure-container-networking/telemetry"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.uber.org/zap"
 )
 
@@ -49,6 +56,48 @@ func printVersion() {
 	fmt.Printf("Azure CNI Version %v\n", version)
 }
 
+func initOpenTelemetry(ctx context.Context, serviceName string) (*trace.TracerProvider, error) {
+	// Get Jaeger endpoint from environment variable, default to your Jaeger VM
+	jaegerEndpoint := os.Getenv("JAEGER_ENDPOINT")
+	if jaegerEndpoint == "" {
+		jaegerEndpoint = "http://10.0.0.4:14268/api/traces"
+	}
+
+	logger.Info("Initializing OpenTelemetry", zap.String("jaegerEndpoint", jaegerEndpoint))
+
+	// Create Jaeger exporter
+	exporter, err := jaeger.New(jaeger.WithCollectorEndpoint(
+		jaeger.WithEndpoint(jaegerEndpoint),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Jaeger exporter: %w", err)
+	}
+
+	// Create resource
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String(serviceName),
+			semconv.ServiceVersionKey.String(version),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	tp := trace.NewTracerProvider(
+		trace.WithBatcher(exporter),
+		trace.WithResource(res),
+		trace.WithSampler(trace.AlwaysSample()),
+	)
+
+	otel.SetTracerProvider(tp)
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	logger.Info("OpenTelemetry initialized", zap.String("endpoint", jaegerEndpoint))
+	return tp, nil
+}
+
 func rootExecute() error {
 	var config common.PluginConfig
 
@@ -76,6 +125,7 @@ func rootExecute() error {
 		return errors.Wrap(err, "Create plugin error")
 	}
 
+	// Starting point
 	// Check CNI_COMMAND value
 	cniCmd := os.Getenv(cni.Cmd)
 
@@ -176,6 +226,22 @@ func main() {
 	if vers {
 		printVersion()
 		os.Exit(0)
+	}
+
+	// Initialize OpenTelemetry tracing
+	ctx := context.Background()
+	tp, err := initOpenTelemetry(ctx, name)
+	if err != nil {
+		logger.Error("Failed to initialize OpenTelemetry", zap.Error(err))
+		// Continue without tracing rather than failing completely
+	} else {
+		// Ensure tracer provider is properly shutdown on exit
+		defer func() {
+			if shutdownErr := tp.Shutdown(context.Background()); shutdownErr != nil {
+				logger.Error("Error shutting down tracer provider", zap.Error(shutdownErr))
+			}
+		}()
+		logger.Info("OpenTelemetry tracing initialized successfully")
 	}
 
 	if rootExecute() != nil {

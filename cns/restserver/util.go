@@ -545,6 +545,7 @@ func (service *HTTPRestService) getAllNetworkContainerResponses(
 		getNetworkContainersResponse = append(getNetworkContainersResponse, getNetworkContainerResponse)
 	}
 
+	// HERE we get network container id
 	logger.Printf("getNetworkContainersResponses are %+v", getNetworkContainersResponse)
 
 	return getNetworkContainersResponse

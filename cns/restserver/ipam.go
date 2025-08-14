@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -18,8 +19,95 @@ import (
 	"github.com/Azure/azure-container-networking/common"
 	"github.com/Azure/azure-container-networking/store"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/exp/maps"
 )
+
+// writeTraceIDToFile writes the traceparent string for a given NCID to a file.
+func (service *HTTPRestService) writeTraceIDToFile(ncid, traceparent string) error {
+	// Ensure the directory exists
+	dir := "/var/run/cns"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	filePath := fmt.Sprintf("/var/run/cns/traceid_%s.txt", ncid)
+	err := os.WriteFile(filePath, []byte(traceparent), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write traceparent to file %s: %w", filePath, err)
+	}
+
+	logger.Printf("[Azure CNS] Wrote traceparent to file: %s", filePath)
+	return nil
+}
+
+// extractTraceContextAndCreateSpan extracts trace context from NCIDs (from NetworkContainerID in response or infraContainerID),
+// creates a child span with the potentially trace-enabled context, and returns the updated context and span.
+// This method handles both regular and standalone scenarios.
+func (service *HTTPRestService) extractTraceContextAndCreateSpan(ctx context.Context, ipConfigsResp *cns.IPConfigsResponse, err error, ipconfigsRequest cns.IPConfigsRequest, spanName string, handlerName string, networkContainerIDs []string) (context.Context, trace.Span, string) {
+	var traceparent string
+
+	// For standalone scenarios (ACI), use NetworkContainerIDs from the response
+	if len(networkContainerIDs) > 0 {
+		for _, ncid := range networkContainerIDs {
+			if tp, traceErr := service.readTraceIDFromFile(ncid); traceErr == nil {
+				// Create a temporary header to extract the trace context
+				tempHeader := make(http.Header)
+				tempHeader.Set("Traceparent", tp)
+
+				propagator := propagation.TraceContext{}
+				ctx = propagator.Extract(ctx, propagation.HeaderCarrier(tempHeader))
+				logger.Printf("[Azure CNS] %s: Extracted trace context for NetworkContainerID %s with traceparent: %s", handlerName, ncid, tp)
+				traceparent = tp
+				break // Use the first trace ID found
+			} else {
+				logger.Printf("[Azure CNS] %s: Could not read trace file for NetworkContainerID %s: %v", handlerName, ncid, traceErr)
+			}
+		}
+	} else if ipconfigsRequest.InfraContainerID != "" {
+		// For regular scenarios, infraContainerID is the same as NCID
+		if tp, traceErr := service.readTraceIDFromFile(ipconfigsRequest.InfraContainerID); traceErr == nil {
+			// Create a temporary header to extract the trace context
+			tempHeader := make(http.Header)
+			tempHeader.Set("Traceparent", tp)
+
+			propagator := propagation.TraceContext{}
+			ctx = propagator.Extract(ctx, propagation.HeaderCarrier(tempHeader))
+			logger.Printf("[Azure CNS] %s: Extracted trace context for InfraContainerID/NCID %s with traceparent: %s", handlerName, ipconfigsRequest.InfraContainerID, tp)
+			traceparent = tp
+		} else {
+			logger.Printf("[Azure CNS] %s: Could not read trace file for InfraContainerID/NCID %s: %v", handlerName, ipconfigsRequest.InfraContainerID, traceErr)
+		}
+	} else {
+		logger.Printf("[Azure CNS] %s: No InfraContainerID provided in request and no NetworkContainerIDs provided", handlerName)
+	}
+
+	// Create a child span for this operation with the potentially trace-enabled context
+	ctx, span := otel.Tracer("azure-cns").Start(ctx, spanName)
+
+	sc := span.SpanContext()
+	if sc.IsValid() {
+		logger.Printf("[Azure CNS] %s OpenTelemetry TraceID: %s, SpanID: %s",
+			handlerName, sc.TraceID().String(), sc.SpanID().String())
+	} else {
+		logger.Printf("[Azure CNS] %s: No valid trace context found", handlerName)
+	}
+
+	return ctx, span, traceparent
+}
+
+// readTraceIDFromFile reads the traceparent string for a given NCID from a file.
+func (service *HTTPRestService) readTraceIDFromFile(ncid string) (string, error) {
+	filePath := fmt.Sprintf("/var/run/cns/traceid_%s.txt", ncid)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
 var (
 	ErrStoreEmpty             = errors.New("empty endpoint state store")
@@ -136,6 +224,7 @@ func (service *HTTPRestService) requestIPConfigHandlerHelperStandalone(ctx conte
 	// IMPORTANT: although SwiftV2 reuses the concept of NCs, NMAgent doesn't program NCs for SwiftV2, but
 	// instead programs NICs. When getting SwiftV2 NCs, we want the NIC type and MAC address of the NCs.
 	// TODO: we need another way to verify and sync NMAgent's NIC programming status. pending new NMAgent API or NIC programming status to be passed in the SwiftV2 create NC request.
+	// Here we get all network container responses
 	resp := service.getAllNetworkContainerResponses(cnsRequest) //nolint:contextcheck // not passed in any methods, appease linter
 	// return err if returned list has no NCs
 	if len(resp) == 0 {
@@ -151,6 +240,7 @@ func (service *HTTPRestService) requestIPConfigHandlerHelperStandalone(ctx conte
 	podIPInfoList := make([]cns.PodIpInfo, 0, len(resp))
 	for i := range resp {
 		podIPInfo := cns.PodIpInfo{
+			NetworkContainerID:              resp[i].NetworkContainerID, // Set NetworkContainerID for trace extraction
 			PodIPConfig:                     resp[i].IPConfiguration.IPSubnet,
 			MacAddress:                      resp[i].NetworkInterfaceInfo.MACAddress,
 			NICType:                         resp[i].NetworkInterfaceInfo.NICType,
@@ -205,13 +295,13 @@ func (service *HTTPRestService) RequestIPConfigHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	// This method can only return EXACTLY 1 IP. If we have more than one NC then we expect to need to return one IP per NC
-	if len(service.state.ContainerStatus) != 1 {
-		// we send a response back saying that this API won't be able to return the amount of IPs needed to fulfill the request
+	// This method returns EXACTLY 1 IP. It can work with multiple NCs and will pick one IP from available NCs
+	if len(service.state.ContainerStatus) == 0 {
+		// we send a response back saying that this API won't be able to return IPs when no NCs exist
 		reserveResp := &cns.IPConfigResponse{
 			Response: cns.Response{
 				ReturnCode: types.InvalidRequest,
-				Message:    fmt.Sprintf("Expected 1 NC when calling this API but found %d NCs", len(service.state.ContainerStatus)),
+				Message:    "No NCs available to allocate IP from",
 			},
 		}
 		w.Header().Set(cnsReturnCode, reserveResp.Response.ReturnCode.String())
@@ -233,7 +323,27 @@ func (service *HTTPRestService) RequestIPConfigHandler(w http.ResponseWriter, r 
 		}
 	}
 
-	ipConfigsResp, errResp := service.requestIPConfigHandlerHelper(r.Context(), ipconfigsRequest) //nolint:contextcheck // appease linter
+	ctx := r.Context()
+
+	// First, let's call the helper to get the IP configuration
+	// so we can extract the NCIDs and find the associated trace ID
+	ipConfigsResp, errResp := service.requestIPConfigHandlerHelper(ctx, ipconfigsRequest)
+
+	// Extract trace context and create span using common method
+	ctx, span, _ := service.extractTraceContextAndCreateSpan(ctx, ipConfigsResp, errResp, ipconfigsRequest, "requestIPConfig", "RequestIPConfigHandler", nil)
+	defer span.End()
+
+	logger.Printf("[Azure CNS] RequestIPConfigHandler: Starting request with PodInterfaceID: %s, InfraContainerID: %s, Ifname: %s, DesiredIPAddress: %s",
+		ipconfigRequest.PodInterfaceID, ipconfigRequest.InfraContainerID, ipconfigRequest.Ifname, ipconfigRequest.DesiredIPAddress)
+
+	// Add event to span with request details
+	span.AddEvent("IPConfigRequest", trace.WithAttributes(
+		attribute.String("podInterfaceID", ipconfigRequest.PodInterfaceID),
+		attribute.String("infraContainerID", ipconfigRequest.InfraContainerID),
+		attribute.String("ifname", ipconfigRequest.Ifname),
+		attribute.String("desiredIPAddress", ipconfigRequest.DesiredIPAddress),
+	))
+
 	if errResp != nil {
 		// As this API is expected to return IPConfigResponse, generate it from the IPConfigsResponse returned above
 		reserveResp := &cns.IPConfigResponse{
@@ -270,6 +380,7 @@ func (service *HTTPRestService) RequestIPConfigHandler(w http.ResponseWriter, r 
 	logger.ResponseEx(opName, ipconfigsRequest, reserveResp, reserveResp.Response.ReturnCode, err)
 }
 
+// Where I should read from the file and take the trace id
 // RequestIPConfigsHandler requests multiple IPConfigs from the CNS state
 func (service *HTTPRestService) RequestIPConfigsHandler(w http.ResponseWriter, r *http.Request) {
 	opName := "requestIPConfigsHandler"
@@ -280,7 +391,13 @@ func (service *HTTPRestService) RequestIPConfigsHandler(w http.ResponseWriter, r
 	if err != nil {
 		return
 	}
+
+	ctx := r.Context()
 	var ipConfigsResp *cns.IPConfigsResponse
+
+	// First, let's call the helper to get the IP configurations
+	// so we can extract the NCIDs and find the associated trace ID
+	var tempCtx context.Context = ctx
 
 	// Check if IPConfigsHandlerMiddleware is set
 	if service.IPConfigsHandlerMiddleware != nil {
@@ -291,13 +408,49 @@ func (service *HTTPRestService) RequestIPConfigsHandler(w http.ResponseWriter, r
 			wrappedHandler = service.IPConfigsHandlerMiddleware.IPConfigsRequestHandlerWrapper(service.requestIPConfigHandlerHelper, service.ReleaseIPConfigHandlerHelper)
 		// this middleware is used for standalone swiftv2 secenario where a different helper is invoked as the PodInfo is read from cns state
 		case cns.StandaloneSWIFTV2:
+			// This is the case for ACI
 			wrappedHandler = service.IPConfigsHandlerMiddleware.IPConfigsRequestHandlerWrapper(service.requestIPConfigHandlerHelperStandalone, nil)
 		}
 
-		ipConfigsResp, err = wrappedHandler(r.Context(), ipconfigsRequest)
+		ipConfigsResp, err = wrappedHandler(tempCtx, ipconfigsRequest)
 	} else {
-		ipConfigsResp, err = service.requestIPConfigHandlerHelper(r.Context(), ipconfigsRequest) // nolint:contextcheck // appease linter
+		ipConfigsResp, err = service.requestIPConfigHandlerHelper(tempCtx, ipconfigsRequest)
 	}
+
+	// Extract trace context and create span using common method
+	// For standalone scenarios (ACI), we need to extract NetworkContainerIDs from the middleware response
+	var networkContainerIDs []string
+	if service.IPConfigsHandlerMiddleware != nil && service.IPConfigsHandlerMiddleware.Type() == cns.StandaloneSWIFTV2 {
+		// For standalone scenarios, extract NetworkContainerIDs from PodIpInfo.NetworkContainerID field
+		if ipConfigsResp != nil && len(ipConfigsResp.PodIPInfo) > 0 {
+			ncidMap := make(map[string]bool)
+			for _, podIPInfo := range ipConfigsResp.PodIPInfo {
+				if podIPInfo.NetworkContainerID != "" {
+					ncidMap[podIPInfo.NetworkContainerID] = true
+				}
+			}
+			for ncid := range ncidMap {
+				networkContainerIDs = append(networkContainerIDs, ncid)
+			}
+			logger.Printf("[Azure CNS] RequestIPConfigsHandler: Extracted NetworkContainerIDs for standalone: %v", networkContainerIDs)
+		}
+	}
+
+	ctx, span, traceparent := service.extractTraceContextAndCreateSpan(ctx, ipConfigsResp, err, ipconfigsRequest, "requestIPConfigs", "RequestIPConfigsHandler", networkContainerIDs)
+	defer span.End()
+
+	// Set traceparent in response header if found
+	if traceparent != "" {
+		w.Header().Set("Traceparent", traceparent)
+	}
+
+	// Add event to span with request details
+	span.AddEvent("IPConfigsRequest", trace.WithAttributes(
+		attribute.String("networkContainerID", networkContainerIDs[0]),
+		attribute.String("podInterfaceID", ipconfigsRequest.PodInterfaceID),
+		attribute.String("infraContainerID", ipconfigsRequest.InfraContainerID),
+		attribute.String("ifname", ipconfigsRequest.Ifname),
+	))
 
 	if err != nil {
 		w.Header().Set(cnsReturnCode, ipConfigsResp.Response.ReturnCode.String())
@@ -433,12 +586,12 @@ func (service *HTTPRestService) ReleaseIPConfigHandler(w http.ResponseWriter, r 
 		return
 	}
 
-	// check to make sure there is only one NC
-	if len(service.state.ContainerStatus) != 1 {
+	// check to make sure there are NCs available
+	if len(service.state.ContainerStatus) == 0 {
 		reserveResp := &cns.IPConfigResponse{
 			Response: cns.Response{
 				ReturnCode: types.InvalidRequest,
-				Message:    fmt.Sprintf("Expected 1 NC when calling this API but found %d NCs", len(service.state.ContainerStatus)),
+				Message:    "No NCs available to release IP from",
 			},
 		}
 		w.Header().Set(cnsReturnCode, reserveResp.Response.ReturnCode.String())

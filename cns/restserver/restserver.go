@@ -95,6 +95,9 @@ type HTTPRestService struct {
 	PnpIDByMacAddress          map[string]string
 	imdsClient                 imdsClient
 	nodesubnetIPFetcher        *nodesubnet.IPFetcher
+
+	// TraceID propagation: map InfraContainerID to traceID
+	traceIDByInfraContainerID map[string]string
 }
 
 type CNIConflistGenerator interface {
