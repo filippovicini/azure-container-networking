@@ -125,6 +125,9 @@ func rootExecute() error {
 		return errors.Wrap(err, "Create plugin error")
 	}
 
+	ctx := context.Background()
+	ctx, span := otel.Tracer("azure-vnet").Start(ctx, "read env variable")
+	defer span.End()
 	// Starting point
 	// Check CNI_COMMAND value
 	cniCmd := os.Getenv(cni.Cmd)
