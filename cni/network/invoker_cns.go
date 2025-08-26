@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 
 	"github.com/Azure/azure-container-networking/cni"
 	"github.com/Azure/azure-container-networking/cni/log"
@@ -18,6 +19,10 @@ import (
 	"github.com/Azure/azure-container-networking/network/policy"
 	cniSkel "github.com/containernetworking/cni/pkg/skel"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -111,8 +116,39 @@ func (invoker *CNSIPAMInvoker) Add(addConfig IPAMAddConfig) (IPAMAddResult, erro
 	logger.Info("Requesting IP for pod using ipconfig",
 		zap.Any("pod", podInfo),
 		zap.Any("ipconfig", ipconfigs))
-	response, err := invoker.cnsClient.RequestIPs(context.TODO(), ipconfigs)
+	response, err, traceparent := invoker.cnsClient.RequestIPs(context.TODO(), ipconfigs)
+	logger.Info(traceparent)
+
+	// Create a span in the same trace using the traceparent
+	var span trace.Span
+	if traceparent != "" {
+		// Create a temporary header to extract the trace context
+		tempHeader := make(http.Header)
+		tempHeader.Set("Traceparent", traceparent)
+
+		propagator := propagation.TraceContext{}
+		traceCtx := propagator.Extract(context.Background(), propagation.HeaderCarrier(tempHeader))
+
+		// Create a child span for CNI processing
+		_, span = otel.Tracer("azure-cni").Start(traceCtx, "CNI-CNS-Request")
+		span.SetAttributes(
+			attribute.String("pod.name", invoker.podName),
+			attribute.String("pod.namespace", invoker.podNamespace),
+			attribute.String("container.id", addConfig.args.ContainerID),
+			attribute.String("pod.interface.id", GetEndpointID(addConfig.args)),
+		)
+		defer span.End()
+
+		logger.Info("Created CNI span in same trace",
+			zap.String("traceparent", traceparent),
+			zap.String("trace.id", span.SpanContext().TraceID().String()),
+			zap.String("span.id", span.SpanContext().SpanID().String()))
+	}
+
 	if err != nil {
+		if span != nil {
+			span.SetAttributes(attribute.String("error", err.Error()))
+		}
 		if cnscli.IsUnsupportedAPI(err) {
 			// If RequestIPs is not supported by CNS, use RequestIPAddress API
 			logger.Error("RequestIPs not supported by CNS. Invoking RequestIPAddress API",
@@ -137,6 +173,7 @@ func (invoker *CNSIPAMInvoker) Add(addConfig IPAMAddConfig) (IPAMAddResult, erro
 					res.PodIpInfo,
 				},
 			}
+
 		} else {
 			logger.Info("Failed to get IP address from CNS",
 				zap.Any("response", response))
@@ -163,6 +200,12 @@ func (invoker *CNSIPAMInvoker) Add(addConfig IPAMAddConfig) (IPAMAddResult, erro
 			pnpID:              response.PodIPInfo[i].PnPID,
 			endpointPolicies:   response.PodIPInfo[i].EndpointPolicies,
 		}
+
+		span.AddEvent("PodIPInfo", trace.WithAttributes(
+			attribute.String("podIPAddress", info.podIPAddress),
+			attribute.String("ipInfo", fmt.Sprintf("%+v", info)),
+			attribute.String("podInfo", fmt.Sprintf("%+v", podInfo)),
+		))
 
 		logger.Info("Received info for pod",
 			zap.Any("ipInfo", info),

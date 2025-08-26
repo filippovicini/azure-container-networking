@@ -60,7 +60,7 @@ func initOpenTelemetry(ctx context.Context, serviceName string) (*trace.TracerPr
 	// Get Jaeger endpoint from environment variable, default to your Jaeger VM
 	jaegerEndpoint := os.Getenv("JAEGER_ENDPOINT")
 	if jaegerEndpoint == "" {
-		jaegerEndpoint = "http://135.18.41.175:14268/api/traces"
+		jaegerEndpoint = "http://10.0.0.4:14268/api/traces"
 	}
 
 	logger.Info("Initializing OpenTelemetry", zap.String("jaegerEndpoint", jaegerEndpoint))
