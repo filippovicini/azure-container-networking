@@ -947,17 +947,6 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 	userAgent := r.Header.Get("User-Agent")
 	authorization := r.Header.Get("Authorization")
 
-	// Log specific headers for testing
-	// TODO: remove this
-	logger.Printf("[Azure CNS] Key Headers:")
-	logger.Printf("[Azure CNS]   Content-Type: %s", contentType)
-	logger.Printf("[Azure CNS]   User-Agent: %s", userAgent)
-	if authorization != "" {
-		logger.Printf("[Azure CNS]   Authorization: Alert some authorization header is present, but not logging it for security reasons")
-	}
-	logger.Printf("[Azure CNS]   TraceId: %s", traceID)
-	logger.Printf("[Azure CNS]   Traceparent: %s", traceparent)
-
 	ctx := r.Context()
 
 	if traceparent != "" {
@@ -976,10 +965,6 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 	} else {
 		logger.Printf("[Azure CNS] No valid OpenTelemetry trace context found")
 	}
-
-	// Log the W3C Traceparent header again for reference
-	// TODO: remove this
-	logger.Printf("[Azure CNS] W3C Traceparent header: %s", traceparent)
 
 	span.AddEvent("CNS", trace.WithAttributes(
 		attribute.String("networkContainerID", req.NetworkContainerID),
@@ -1019,6 +1004,12 @@ func (service *HTTPRestService) publishNetworkContainer(w http.ResponseWriter, r
 		logger.Response(service.Name, resp, resp.Response.ReturnCode, err)
 		return
 	}
+
+	span.AddEvent("Joined network", trace.WithAttributes(
+		attribute.String("networkID", req.NetworkID),
+		attribute.Int("statusCode", joinResp.StatusCode),
+		attribute.String("resp", joinResp.Status),
+	))
 
 	joinBytes, _ := io.ReadAll(joinResp.Body)
 	_ = joinResp.Body.Close()

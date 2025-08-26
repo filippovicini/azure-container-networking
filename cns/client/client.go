@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -318,6 +319,7 @@ func (c *Client) RequestIPAddress(ctx context.Context, ipconfig cns.IPConfigRequ
 	}
 
 	u := c.routes[cns.RequestIPConfig]
+	log.Printf("[CNS Client] RequestIPAddress URL: %s", u.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), &body)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to build request")
@@ -332,6 +334,12 @@ func (c *Client) RequestIPAddress(ctx context.Context, ipconfig cns.IPConfigRequ
 
 	if res.StatusCode != http.StatusOK {
 		return nil, errors.Errorf("http response %d", res.StatusCode)
+	}
+	fmt.Printf("[CNS Client] RequestIPAddress URL: %s", u.String())
+	log.Printf("[CNS Client] RequestIPAddress HTTP response status code: %d", res.StatusCode)
+	traceparent := res.Header.Get("traceparent")
+	if traceparent != "" {
+		log.Printf("[CNS Client] Received traceparent from RequestIPAddress response: %s", traceparent)
 	}
 
 	var response cns.IPConfigResponse
@@ -356,6 +364,7 @@ func (c *Client) ReleaseIPAddress(ctx context.Context, ipconfig cns.IPConfigRequ
 	}
 
 	u := c.routes[cns.ReleaseIPConfig]
+	log.Printf("[CNS Client] ReleaseIPAddress URL: %s", u.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), &body)
 	if err != nil {
 		return errors.Wrap(err, "failed to build request")
@@ -388,7 +397,7 @@ func (c *Client) ReleaseIPAddress(ctx context.Context, ipconfig cns.IPConfigRequ
 }
 
 // RequestIPs calls the RequestIPConfigs in CNS
-func (c *Client) RequestIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) (*cns.IPConfigsResponse, error) {
+func (c *Client) RequestIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) (*cns.IPConfigsResponse, error, string) {
 	var err error
 	defer func() {
 		if err != nil {
@@ -401,18 +410,20 @@ func (c *Client) RequestIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) 
 	var body bytes.Buffer
 	err = json.NewEncoder(&body).Encode(ipconfig)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to encode IPConfigsRequest")
+		return nil, errors.Wrap(err, "failed to encode IPConfigsRequest"), ""
 	}
 
 	u := c.routes[cns.RequestIPConfigs]
+	fmt.Printf("[CNS Client] RequestIPAddress URL: %s", u.String())
+	log.Printf("[CNS Client] RequestIPs URL: %s", u.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), &body)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to build request")
+		return nil, errors.Wrap(err, "failed to build request"), ""
 	}
 	req.Header.Set(headerContentType, contentTypeJSON)
 	res, err := c.client.Do(req)
 	if err != nil {
-		return nil, errors.Wrap(err, "http request failed")
+		return nil, errors.Wrap(err, "http request failed"), ""
 	}
 	defer res.Body.Close()
 
@@ -420,25 +431,29 @@ func (c *Client) RequestIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) 
 		return nil, &CNSClientError{
 			Code: types.UnsupportedAPI,
 			Err:  errors.Errorf("Unsupported API"),
-		}
+		}, ""
 	}
 
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("http response %d", res.StatusCode)
+		return nil, errors.Errorf("http response %d", res.StatusCode), ""
 	}
+	fmt.Printf("[CNS Client] RequestIPAddress URL: %s", res.Status)
+	log.Printf("[CNS Client] RequestIPs HTTP response status code: %d", res.StatusCode)
 
 	var response cns.IPConfigsResponse
 	err = json.NewDecoder(res.Body).Decode(&response)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to decode IPConfigsResponse")
+		return nil, errors.Wrap(err, "failed to decode IPConfigsResponse"), ""
 	}
 	//GET THE TRACE DOWN HERE
 
 	if response.Response.ReturnCode != 0 {
-		return nil, errors.New(response.Response.Message)
+		return nil, errors.New(response.Response.Message), ""
 	}
 
-	return &response, nil
+	traceparent := res.Header.Get("traceparent")
+	fmt.Printf("traceparent from RequestIPs: %s", traceparent)
+	return &response, nil, traceparent
 }
 
 // ReleaseIPs calls releaseIPs on which releases the IPs on the pod
@@ -450,6 +465,8 @@ func (c *Client) ReleaseIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) 
 	}
 
 	u := c.routes[cns.ReleaseIPConfigs]
+	fmt.Printf("CNS Client] ReleaseIPAddress URL: %s", u.String())
+	log.Printf("[CNS Client] ReleaseIPAddress URL: %s", u.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), &body)
 	if err != nil {
 		return errors.Wrap(err, "failed to build request")
@@ -474,6 +491,7 @@ func (c *Client) ReleaseIPs(ctx context.Context, ipconfig cns.IPConfigsRequest) 
 	if res.StatusCode != http.StatusOK {
 		return errors.Errorf("http response %d", res.StatusCode)
 	}
+	log.Printf("[CNS Client] ReleaseIPs HTTP response status code: %d", res.StatusCode)
 
 	var resp cns.Response
 
